@@ -157,9 +157,13 @@ Three strategies, run in order, first match wins:
 - Match against a command knowledge base (built into Laya fine-tuning data)
 - Example: "rename x to y" → keywords: `rename`, `move`, `file` → candidates: `mv`, `git mv`, `rename`
 
-### 4. Laya Inference
+### 4. NLaze Inference (custom fine-tuned model)
 
-Model: `convaiinnovations/laya` (English base, 421M params, 512 tokens context)
+Model: fine-tuned from `convaiinnovations/laya` (ModernBERT-large, 421M params)
+Shipped as quantized version (Q8 or Q4, chosen after benchmarking).
+FP16 reference checkpoint also released.
+
+Context: 512 tokens (English base), extendable via fine-tuning.
 
 Questions schema:
 ```python
@@ -269,7 +273,8 @@ auto_run_threshold = 0.85
 mode = "auto"                # auto | always_confirm | never_confirm
 
 [model]
-checkpoint = "convaiinnovations/laya"
+checkpoint = "Punch-Pain/nlaze-base"    # our fine-tuned checkpoint
+version = "fp16"                        # fp16 | q8 | q4 (default chosen after benchmark)
 device = "cuda"
 max_candidates = 15
 
@@ -287,36 +292,70 @@ extra_patterns = [
 
 | Metric | Target |
 |---|---|
-| Valid command overhead | 0ms (no Laya, no socket) |
-| Fix latency (end-to-end) | < 30ms (12ms Laya + 5ms socket + 10ms eval) |
-| Daemon startup (model load) | < 5s (one-time) |
-| Memory (resident) | < 1.5GB VRAM (model) |
+| Valid command overhead | 0ms (no model, no socket) |
+| Fix latency (end-to-end) | < 30ms (12ms model + 5ms socket + 10ms eval) |
+| Daemon startup (no model) | < 100ms (socket only) |
+| Model load (on terminal open) | < 5s (one-time) |
+| Memory (resident, model loaded) | < 400MB VRAM (default quantized version) |
+| Memory (resident, no model) | < 20MB RAM (socket only) |
 | Candidate generation | < 2ms |
 | Pattern lookup | < 0.1ms |
 
+## Model Strategy
+
+**We do not use stock Laya. We fine-tune our own.**
+
+- Base: `convaiinnovations/laya` (ModernBERT-large, 421M params, FP16)
+- Fine-tune on command correction + NL intent data
+- Benchmark all quantization levels after training
+- Release all versions, pick default based on benchmarks
+
+### Quantization plan
+
+| Version | Params | VRAM (approx) | Quality target |
+|---|---|---|---|
+| FP16 | 421M | ~840MB | 100% (reference) |
+| Q8 | 421M | ~421MB | ~99.9% |
+| Q4 | 421M | ~210MB | ~99% |
+| FP16 base (ModernBERT-base) | 149M | ~298MB | fallback if needed |
+
+Default is chosen after benchmarking, not assumed.
+
+### VRAM budget
+
+- Target: **under 400MB** for the shipped default
+- Q8 or Q4 on the full model fits this
+- Model loads only when a compatible terminal opens
+- Model unloads when last terminal closes
+
 ## Phase Plan
 
-### Phase 1 — Working smart shell (current)
-- Daemon with Laya loaded
-- Fish shell wrapper
-- Edit distance candidate generation
-- Zoxide integration for paths
-- Auto-run / show options / confirm logic
+### Phase 1 — Fine-tune the model (current)
+- Generate training data (typos, NL intents, command pairs)
+- Format as Laya's RLCD training schema
+- Fine-tune full FP16 Laya on RTX 5050
+- Evaluate accuracy on held-out test set
+- Document benchmark results
+
+### Phase 2 — Quantize & benchmark
+- Export FP16 checkpoint
+- Produce Q8, Q4 quantized versions
+- Benchmark accuracy vs latency for each
+- Benchmark VRAM usage for each
+- Pick default based on data
+- Release all versions
+
+### Phase 3 — Daemon + integration
+- Unix socket daemon (resident, model lazy-loaded)
+- Fish shell wrapper (fast-path validation)
+- Zoxide integration for path resolution
 - SQLite learning store
+- Destructive command detection
+- Auto-run / show options / confirm logic
 
-### Phase 2 — NL intent
-- Command knowledge base (`data/commands.json`)
-- Keyword matching for candidate generation
+### Phase 4 — NL intent + polish
+- Command knowledge base
 - Natural language input handling
-
-### Phase 3 — Fine-tuned Laya
-- Collect real usage data from Phase 1-2
-- Generate training pairs from corrections log
-- Fine-tune Laya with RLCD recipe
-- Support >20 candidates, longer command inputs
-
-### Phase 4 — Polish
 - Bash + zsh support
-- Interactive option picker (fzf integration)
-- Config GUI
+- Terminal-specific integration (Ghostty/Kitty)
 - Public release
