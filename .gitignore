@@ -1,0 +1,28 @@
+# Model weights & training artifacts
+models/
+*.safetensors
+*.pt
+*.bin
+
+# Training data (internal — provenance referenced in datasets.md, never shipped)
+data/
+scripts/data/
+
+# Internal documents — reviewed, pruned, then published selectively
+docs/
+
+# All scripts are internal by default; reviewed/pruned scripts are force-added for release
+scripts/
+
+# Published reports: only reviewed markdown. Raw eval/probe outputs stay internal.
+reports/*.json
+reports/*.jsonl
+
+# Environment / caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.cache/
+*.log
