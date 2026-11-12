@@ -6,7 +6,7 @@ Anything the pre-check cannot classify lands in CONFIRM (never AUTO).
 from __future__ import annotations
 from enum import Enum
 from dataclasses import dataclass
-from nlaze.verifier import head_resolves
+from nlaze.verifier import valid_as_typed
 from nlaze.danger import classify, HIGH, MILD
 
 class Lane(Enum):
@@ -31,11 +31,11 @@ def classify_input(cmd_line: str, known_correct: bool = False) -> Verdict:
         return Verdict(Lane.DANGER_HIGH, "matches high-danger pattern", sev.detail)
     if sev is MILD:
         return Verdict(Lane.DANGER_MILD, "matches mild-danger (privileged, reversible)", sev.detail)
-    # valid as typed? deterministic, cheap, narrow
-    parts = line.split()
-    if head_resolves(parts[0]):
-        return Verdict(Lane.PASSTHROUGH, "head resolves on PATH/builtin — valid as typed")
-    return Verdict(Lane.CONFIRM, "unknown command — needs user intent elicitation")
+    # valid as typed? deterministic, cheap, narrow — checked to the first argument (§1.1)
+    ok, why = valid_as_typed(line)
+    if ok:
+        return Verdict(Lane.PASSTHROUGH, why)
+    return Verdict(Lane.CONFIRM, f"invalid as typed ({why}) — needs user intent elicitation")
 
 def classify_candidate(cmd_line: str, *, history_pairs_clean: int = 0) -> Verdict:
     """Candidate verdict for a *suggested* correction (never called on the raw input)."""
