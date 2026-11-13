@@ -91,3 +91,9 @@ class Store:
         ih = self.hash_input(inp)
         row = self.db.execute("SELECT quarantined_until_tick FROM pairs WHERE input_hash=? AND correction=?", (ih, correction)).fetchone()
         return bool(row and self.tick_now() < row[0])
+
+    def reset_pair(self, input_hash: str, correction: str) -> None:
+        """Wipe a pair's evidence (2 strikes -> UNKNOWN, spec §5.2)."""
+        self.db.execute("DELETE FROM pairs WHERE input_hash=? AND correction=?",
+                        (input_hash, correction))
+        self.db.commit()
