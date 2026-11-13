@@ -1,0 +1,62 @@
+"""Phase 1 — lane classifier for the three-lane harness.
+
+Lane enum order = precedence: PASSTHROUGH first, then DANGER_HIGH/MILD, then Auto/Confirm.
+Anything the pre-check cannot classify lands in CONFIRM (never AUTO).
+"""
+from __future__ import annotations
+from enum import Enum
+from dataclasses import dataclass
+from nlaze.verifier import valid_as_typed
+from nlaze.danger import classify, HIGH, MILD
+from nlaze.policy import Decision
+
+class Lane(Enum):
+    PASSTHROUGH = "passthrough"   # already-correct input; nothing initializes
+    CONFIRM     = "confirm"       # needs explicit user approval
+    DANGER_MILD = "danger_mild"   # confirm UX, ordinary acknowledgment
+    DANGER_HIGH = "danger_high"   # typed acknowledgment / hold-Enter; never Auto
+    AUTO        = "auto"          # clean history → may serve without prompting
+
+@dataclass(frozen=True)
+class Verdict:
+    lane: Lane
+    reason: str
+    detail: str = ""
+
+def classify_input(cmd_line: str, known_correct: bool = False) -> Verdict:
+    line = cmd_line.strip()
+    if not line:
+        return Verdict(Lane.PASSTHROUGH, "empty input → passthrough")
+    sev = classify(line)
+    if sev is HIGH:
+        return Verdict(Lane.DANGER_HIGH, "matches high-danger pattern", sev.detail)
+    if sev is MILD:
+        return Verdict(Lane.DANGER_MILD, "matches mild-danger (privileged, reversible)", sev.detail)
+    # valid as typed? deterministic, cheap, narrow — checked to the first argument (§1.1)
+    ok, why = valid_as_typed(line)
+    if ok:
+        return Verdict(Lane.PASSTHROUGH, why)
+    return Verdict(Lane.CONFIRM, f"invalid as typed ({why}) — needs user intent elicitation")
+
+def classify_candidate(cmd_line: str, *, history_pairs_clean: int = 0,
+                       policy=None) -> Verdict:
+    """Candidate verdict for a *suggested* correction (never called on the raw input).
+
+    Precedence (spec §4.2): danger table > deny list > allowlist > usage evidence.
+    `policy` is optional so the Phase-1 call sites keep working; the daemon always passes it.
+    """
+    sev = classify(cmd_line)
+    if sev is HIGH:
+        return Verdict(Lane.DANGER_HIGH, "dangerous candidate — warning panel only", sev.detail)
+    if sev is MILD:
+        return Verdict(Lane.DANGER_MILD, "privileged-read candidate — ordinary confirm", sev.detail)
+    if policy is not None:
+        d = policy.check(cmd_line)
+        if d is Decision.DENY:
+            return Verdict(Lane.CONFIRM, "on the deny list — always confirms")
+        if d is Decision.HEAD_PROMPT:
+            return Verdict(Lane.CONFIRM, "head not allowlisted — certification required")
+        if d is Decision.FLAG_PROMPT:
+            return Verdict(Lane.CONFIRM, "flag needs certification")
+    return Verdict(Lane.AUTO if history_pairs_clean >= 17 else Lane.CONFIRM,
+                   "auto-eligible by usage" if history_pairs_clean >= 17 else "no usage evidence — confirm")
