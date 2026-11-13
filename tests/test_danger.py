@@ -34,7 +34,6 @@ def test_high_patterns(cmd):
     "sudo mount -l",
     "sudo cat /etc/os-release",
     "sudo -v",
-    "sudo pacman -Syu",  # upgrade is not read-only — actually package upgrade IS a change; must NOT be MILD. Decided in test below.
     "ls -la",
     "cd ..",
     "grep -r foo .",
@@ -60,3 +59,10 @@ def test_mixed_with_dangerous_suffix_is_high():
 ])
 def test_normal_push_not_high(cmd):
     assert classify(cmd) is not HIGH
+
+
+def test_package_upgrade_is_high():
+    """§2.1 — a package upgrade is a system change, not a read-only query.
+    The v2 table had it as MILD; on an Arch machine that was the invisible danger."""
+    assert classify("sudo pacman -Syu") is HIGH
+    assert classify("sudo apt upgrade") is HIGH
