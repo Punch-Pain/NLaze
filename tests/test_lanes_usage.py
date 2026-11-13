@@ -2,6 +2,7 @@ import os, tempfile
 import pytest
 from nlaze.lanes import classify_input, classify_candidate, Lane
 from nlaze.usage import Store
+from nlaze.policy import Policy
 
 @pytest.mark.parametrize("cmd,lane", [
     ("", Lane.PASSTHROUGH),
@@ -63,3 +64,30 @@ def test_quarantine_flag(tmp_path):
 def test_hash_input_deterministic(tmp_path):
     s1, s2 = Store(tmp_path / "a.sqlite"), Store(tmp_path / "b.sqlite")
     assert s1.hash_input("git status") == s2.hash_input("git status")
+
+
+# --- policy integration (spec §4.2 precedence) ------------------------------
+
+def test_candidate_denied_by_policy(tmp_path):
+    p = Policy(tmp_path / "p.sqlite")
+    p.deny("opencode", "--remove-database")
+    v = classify_candidate("opencode --remove-database", history_pairs_clean=999, policy=p)
+    assert v.lane is Lane.CONFIRM
+
+
+def test_candidate_allowlisted_auto(tmp_path):
+    p = Policy(tmp_path / "p.sqlite")
+    assert classify_candidate("git status", history_pairs_clean=999, policy=p).lane is Lane.AUTO
+
+
+def test_candidate_unallowlisted_confirms(tmp_path):
+    p = Policy(tmp_path / "p.sqlite")
+    # even with abundant history, an unallowlisted head must not auto-run
+    assert classify_candidate("opencode foo", history_pairs_clean=999, policy=p).lane is Lane.CONFIRM
+
+
+def test_danger_beats_allowlist(tmp_path):
+    p = Policy(tmp_path / "p.sqlite")
+    p.allow_head("rm")
+    v = classify_candidate("rm -rf /", history_pairs_clean=999, policy=p)
+    assert v.lane is Lane.DANGER_HIGH
