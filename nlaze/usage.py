@@ -33,7 +33,7 @@ class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(self.path))
+        self.db = sqlite3.connect(str(self.path), check_same_thread=False)
         self.db.executescript(DDL)
 
     def tick(self) -> int:

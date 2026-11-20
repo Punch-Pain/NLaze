@@ -1,24 +1,35 @@
-"""nlaze CLI — query the gate and audit the per-user policy.
+"""nlaze CLI — query the gate, run the postexec hook/daemon, and audit per-user policy.
 
 Usage:
   nlaze check "<command>"                 # classify a command line (dry-run, never executes)
   nlaze --json check "<command>"          # machine-readable
-  nlaze allowlist list                    # show certified heads and flags
-  nlaze allowlist add <head> [--flag <f>]
-  nlaze allowlist remove <head> [--flag <f>]
-  nlaze danger list                       # show the deny list
-  nlaze danger add <head> --flag <f>
-  nlaze danger remove <head> --flag <f>
+  nlaze suggest "<command>"               # retrieve and rank candidates (dry-run)
+  nlaze --json hook-postexec --status <rc> [--cwd <dir>] -- "<command>"
+  nlaze feedback --input "<inp>" --correction "<corr>" (--accept | --reject)
+  nlaze daemon [--socket <path>] [--model <dir>]
+  nlaze fish-init                         # emit fish shell hook script
+  nlaze purge                             # wipe per-user usage.sqlite learning state
+  nlaze allowlist list | add <head> [--flag <f>] | remove <head> [--flag <f>]
+  nlaze danger    list | add <head> --flag <f>   | remove <head> --flag <f>
 """
 from __future__ import annotations
+
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
+import sys
 
-from nlaze.lanes import classify_input, Lane
+from nlaze.daemon import (
+    DaemonServer,
+    HarnessEngine,
+    default_socket_path,
+    default_usage_path,
+    query_daemon_or_local,
+)
+from nlaze.lanes import Lane, classify_input
 from nlaze.policy import Policy
+from nlaze.usage import Store
 
 
 def default_policy_path() -> Path:
@@ -40,6 +51,13 @@ def _hint(line: str) -> str:
     }[v.lane]
 
 
+def _make_local_engine() -> HarnessEngine:
+    return HarnessEngine(
+        store=Store(default_usage_path()),
+        policy=Policy(default_policy_path()),
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="nlaze")
     ap.add_argument("--json", action="store_true")
@@ -47,6 +65,32 @@ def main() -> int:
 
     c = sub.add_parser("check", help="classify a command line (dry-run, never executes)")
     c.add_argument("line")
+
+    sg = sub.add_parser("suggest", help="propose a correction for a failed command (dry-run)")
+    sg.add_argument("line")
+    sg.add_argument("--cwd", default=None)
+
+    hp = sub.add_parser("hook-postexec", help="fish_postexec hook entrypoint")
+    hp.add_argument("--status", type=int, required=True)
+    hp.add_argument("--cwd", default=None)
+    hp.add_argument("line")
+
+    fb = sub.add_parser("feedback", help="record user accept/reject/certification feedback")
+    fb.add_argument("--input", required=True, dest="input_text")
+    fb.add_argument("--correction", required=True)
+    grp = fb.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--accept", action="store_true")
+    grp.add_argument("--reject", action="store_true")
+    fb.add_argument("--certify", choices=["head", "flag"], default=None)
+    fb.add_argument("--head", default=None)
+    fb.add_argument("--flag", default=None)
+
+    dm = sub.add_parser("daemon", help="run per-user Unix socket daemon")
+    dm.add_argument("--socket", default=None)
+    dm.add_argument("--model", default=None)
+
+    sub.add_parser("fish-init", help="print fish shell integration script")
+    sub.add_parser("purge", help="wipe per-user usage.sqlite learning store")
 
     al = sub.add_parser("allowlist", help="audit the allowlist")
     al_sub = al.add_subparsers(dest="al_cmd")
@@ -78,6 +122,62 @@ def main() -> int:
         else:
             print(data["hint"])
             print(f"  lane: {v.lane.value}  ({v.reason})")
+        return 0
+
+    if ns.cmd in {"suggest", "hook-postexec"}:
+        status = 1 if ns.cmd == "suggest" else ns.status
+        req = {"op": "postexec", "cmd": ns.line, "status": status, "cwd": ns.cwd}
+        resp = query_daemon_or_local(req, fallback_engine=_make_local_engine())
+        if ns.json:
+            print(json.dumps(resp))
+        else:
+            if resp.get("action") == "passthrough":
+                print("passthrough")
+            else:
+                print(f"{resp.get('action')}: {resp.get('correction')}")
+        return 0
+
+    if ns.cmd == "feedback":
+        req = {
+            "op": "feedback",
+            "input": ns.input_text,
+            "correction": ns.correction,
+            "accepted": bool(ns.accept),
+            "certify_kind": ns.certify,
+            "head": ns.head,
+            "flag": ns.flag,
+        }
+        resp = query_daemon_or_local(req, fallback_engine=_make_local_engine())
+        if ns.json:
+            print(json.dumps(resp))
+        return 0
+
+    if ns.cmd == "fish-init":
+        fish_file = Path(__file__).resolve().parent / "fish" / "nlaze.fish"
+        print(fish_file.read_text(encoding="utf-8"), end="")
+        return 0
+
+    if ns.cmd == "purge":
+        up = default_usage_path()
+        if up.exists():
+            up.unlink()
+        print("purged usage store")
+        return 0
+
+    if ns.cmd == "daemon":
+        predict_fn = None
+        if ns.model:
+            import laya
+            agent = laya.Agent(str(ns.model))
+            predict_fn = agent.predict
+        eng = HarnessEngine(
+            store=Store(default_usage_path()),
+            policy=Policy(default_policy_path()),
+            predict_fn=predict_fn,
+        )
+        sock = Path(ns.socket) if ns.socket else default_socket_path()
+        srv = DaemonServer(sock, eng)
+        srv.serve_forever()
         return 0
 
     if ns.cmd == "allowlist":

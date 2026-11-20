@@ -122,5 +122,5 @@ class Reconditioner:
         return row[0] * (ALPHA ** (t - row[1]))
 
     def auto_allowed(self, input_hash: str, correction: str, tick: int | None = None) -> bool:
-        """A pair with an active strike is demoted out of Auto."""
-        return self.strike_count(input_hash, correction, tick) < 1.0
+        """A pair with an active strike (within one ~1000-tick half-life) is demoted out of Auto."""
+        return self.strike_count(input_hash, correction, tick) < 0.5
