@@ -49,6 +49,31 @@ def test_store_reject_halves_and_quarantine(tmp_path):
     s.record_reject("gti status", "git status")
     assert not s.auto_eligible("gti status", "git status")
 
+
+def test_store_decay_uses_last_tick_not_neff(tmp_path):
+    """Regression: decay exponent must be (now_tick - last_tick), not (now_tick - n_eff)."""
+    s = Store(tmp_path / "u.sqlite")
+    # Advance clock to tick 5000 first (realistic user session)
+    for _ in range(5000):
+        s.tick()
+    for _ in range(18):
+        s.record_accept("gti status", "git status")
+    for _ in range(100):
+        s.tick()
+    assert s.auto_eligible("gti status", "git status")
+
+
+def test_store_second_reject_resets_neff_to_zero(tmp_path):
+    """Spec §5.1: second reject resets n_eff to zero universally."""
+    s = Store(tmp_path / "u.sqlite")
+    for _ in range(10):
+        s.record_accept("gti status", "git status")
+    s.record_reject("gti status", "git status")
+    s.record_reject("gti status", "git status")
+    ih = s.hash_input("gti status")
+    n_eff = s.db.execute("SELECT n_eff FROM pairs WHERE input_hash=?", (ih,)).fetchone()[0]
+    assert n_eff == 0.0
+
 def test_rejected_ambiguous_state(tmp_path):
     s = Store(tmp_path / "u.sqlite")
     s.record_accept("cd prjects", "cd projects")

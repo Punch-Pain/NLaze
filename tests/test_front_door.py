@@ -105,3 +105,35 @@ def test_sudo_unwraps_and_validates(cmd):
 def test_sudo_real_command_valid(cmd):
     ok, why = valid_as_typed(cmd)
     assert ok, f"{cmd!r} should be valid: {why}"
+
+
+# --- §1.2 complex-input passthrough -----------------------------------------
+
+from nlaze.verifier import is_complex_input
+from nlaze.lanes import classify_input, Lane
+
+
+@pytest.mark.parametrize("cmd,expected_reason_substr", [
+    ("notacmd " + "x" * 200, "200"),
+    ("notacmd arg1\nnotacmd2 arg2", "newline"),
+    ("notacmd a1 a2 a3 a4 a5 a6 a7 a8", "8"),
+    ("notacmd foo | grep bar", "pipeline"),
+    ("notacmd <<EOF", "here-doc"),
+    ("sudo (notacmd1 && notacmd2)", "sudo"),
+])
+def test_complex_inputs_detected_and_passthrough(cmd, expected_reason_substr):
+    complex_ok, reason = is_complex_input(cmd)
+    assert complex_ok, f"{cmd!r} should be complex"
+    assert expected_reason_substr in reason
+    assert classify_input(cmd).lane is Lane.PASSTHROUGH
+
+
+@pytest.mark.parametrize("cmd", [
+    "gti status",
+    "notacmd 'a | b | c' '<<not_heredoc'",
+    "notacmd a1 a2 a3 a4 a5 a6 a7",  # 8 tokens total -> not > 8
+])
+def test_simple_inputs_not_complex(cmd):
+    complex_ok, _ = is_complex_input(cmd)
+    assert not complex_ok, f"{cmd!r} should not be complex"
+

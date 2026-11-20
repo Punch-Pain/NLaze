@@ -26,8 +26,8 @@ ALPHA = 0.99931               # per-command-tick decay
 AUTO_NEFF = 16.6            # ≈17 accepts
 REJECT_HALVE = 0.5
 
-def _d(a: float, b: float) -> float:
-    return a * (ALPHA ** (b - a))
+def _d(n_eff: float, last_tick: int, now_tick: int) -> float:
+    return n_eff * (ALPHA ** max(0, now_tick - last_tick))
 
 class Store:
     def __init__(self, path: str | Path):
@@ -54,10 +54,10 @@ class Store:
     def record_accept(self, inp: str, correction: str) -> None:
         t = self.tick()
         ih = self.hash_input(inp)
-        row = self.db.execute("SELECT id, n_eff, accepted, first_tick FROM pairs WHERE input_hash=? AND correction=?", (ih, correction)).fetchone()
+        row = self.db.execute("SELECT id, n_eff, accepted, first_tick, last_tick FROM pairs WHERE input_hash=? AND correction=?", (ih, correction)).fetchone()
         if row:
-            pid, n_eff, accepted, first_tick = row
-            n_eff = _d(n_eff, t) + 1.0
+            pid, n_eff, accepted, first_tick, last_tick = row
+            n_eff = _d(n_eff, last_tick, t) + 1.0
             self.db.execute("UPDATE pairs SET n_eff=?, accepted=accepted+1, last_tick=? WHERE id=?", (n_eff, t, pid))
         else:
             self.db.execute("INSERT INTO pairs(input_hash, correction, n_eff, accepted, first_tick, last_tick) VALUES (?,?,?,?,?,?)",
@@ -67,10 +67,12 @@ class Store:
     def record_reject(self, inp: str, correction: str) -> None:
         t = self.tick()
         ih = self.hash_input(inp)
-        row = self.db.execute("SELECT id, n_eff, rejected FROM pairs WHERE input_hash=? AND correction=?", (ih, correction)).fetchone()
+        row = self.db.execute("SELECT id, n_eff, rejected, last_tick FROM pairs WHERE input_hash=? AND correction=?", (ih, correction)).fetchone()
         if row:
-            pid, n_eff, rejected = row
-            self.db.execute("UPDATE pairs SET n_eff=?, rejected=rejected+1, last_tick=? WHERE id=?", (n_eff * REJECT_HALVE, t, pid))
+            pid, n_eff, rejected, last_tick = row
+            # Spec §5.1: 1st reject halves decayed n_eff; 2nd+ reject resets n_eff to 0 universally.
+            new_neff = 0.0 if rejected >= 1 else (_d(n_eff, last_tick, t) * REJECT_HALVE)
+            self.db.execute("UPDATE pairs SET n_eff=?, rejected=rejected+1, last_tick=? WHERE id=?", (new_neff, t, pid))
         else:
             self.db.execute("INSERT INTO pairs(input_hash, correction, n_eff, rejected, first_tick, last_tick, quarantined_until_tick) VALUES (?,?,?,?,?,?,?)",
                             (ih, correction, 0.0, 1, t, t, t + 30))
@@ -83,7 +85,7 @@ class Store:
             return False
         n_eff, rejected, first_tick, last_tick, quar = row
         t = self.tick_now()
-        n_eff = _d(n_eff, t)
+        n_eff = _d(n_eff, last_tick, t)
         span = t - first_tick
         return (n_eff >= AUTO_NEFF and rejected == 0 and t >= quar and span >= 100)
 

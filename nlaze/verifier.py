@@ -152,3 +152,131 @@ def valid_as_typed(cmd_line: str) -> tuple[bool, str]:
         return False, f"{head} subcommand {arg!r} is unknown"
 
     return True, "head resolves; no family-specific check"
+
+
+def is_complex_input(cmd_line: str) -> tuple[bool, str]:
+    """Spec §1.2 — scripts and complex inputs are passthrough (not interactive corrections).
+
+    Passthrough triggers if any of these hold:
+      - input length > 200 characters
+      - input contains a raw newline (multi-line input)
+      - input contains more than 8 top-level tokens separated by unquoted whitespace
+      - input is a here-doc/pipeline (detected by `|` at balanced depth after quote stripping,
+        or `<<`)
+      - input begins with `sudo` plus a conjunctive operator at depth > 0 after the first
+        token (scripts wrapped in sudo)
+    """
+    if "\n" in cmd_line or "\r" in cmd_line:
+        return True, "contains raw newline (multi-line input)"
+    s = cmd_line.strip()
+    if len(s) > 200:
+        return True, "input length > 200 characters"
+
+    # Scan unquoted characters with parenthesis/brace depth tracking.
+    in_single = False
+    in_double = False
+    escaped = False
+    depth = 0
+    tokens = 0
+    in_tok = False
+    has_top_pipe = False
+    has_heredoc = False
+    has_nested_conj = False
+
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if escaped:
+            escaped = False
+            if not in_tok:
+                tokens += 1
+                in_tok = True
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            escaped = True
+            if not in_tok:
+                tokens += 1
+                in_tok = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            if not in_tok:
+                tokens += 1
+                in_tok = True
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            if not in_tok:
+                tokens += 1
+                in_tok = True
+            i += 1
+            continue
+
+        if in_single or in_double:
+            i += 1
+            continue
+
+        if ch.isspace():
+            if depth == 0:
+                in_tok = False
+            i += 1
+            continue
+
+        if not in_tok and depth == 0:
+            tokens += 1
+            in_tok = True
+
+        if ch in "({[":
+            depth += 1
+            i += 1
+            continue
+        if ch in ")}]":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+
+        # Here-doc `<<` outside quotes
+        if ch == "<" and i + 1 < n and s[i + 1] == "<":
+            has_heredoc = True
+            i += 2
+            continue
+
+        # Conjunctive / pipeline checks
+        if ch == "|":
+            if i + 1 < n and s[i + 1] == "|":
+                if depth > 0:
+                    has_nested_conj = True
+                i += 2
+                continue
+            if depth == 0:
+                has_top_pipe = True
+            i += 1
+            continue
+
+        if ch == "&" and i + 1 < n and s[i + 1] == "&":
+            if depth > 0:
+                has_nested_conj = True
+            i += 2
+            continue
+
+        if ch == ";" and depth > 0:
+            has_nested_conj = True
+            i += 1
+            continue
+
+        i += 1
+
+    if has_heredoc:
+        return True, "here-doc detected (<<)"
+    if has_top_pipe:
+        return True, "pipeline detected (| at balanced depth)"
+    if (s.startswith("sudo ") or s.startswith("sudo\t")) and has_nested_conj:
+        return True, "sudo with conjunctive operator at depth > 0"
+    if tokens > 8:
+        return True, f"more than 8 top-level tokens ({tokens})"
+    return False, ""
+

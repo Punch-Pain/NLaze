@@ -6,7 +6,7 @@ Anything the pre-check cannot classify lands in CONFIRM (never AUTO).
 from __future__ import annotations
 from enum import Enum
 from dataclasses import dataclass
-from nlaze.verifier import valid_as_typed
+from nlaze.verifier import valid_as_typed, is_complex_input
 from nlaze.danger import classify, HIGH, MILD
 from nlaze.policy import Decision
 
@@ -27,6 +27,10 @@ def classify_input(cmd_line: str, known_correct: bool = False) -> Verdict:
     line = cmd_line.strip()
     if not line:
         return Verdict(Lane.PASSTHROUGH, "empty input → passthrough")
+    # complex / script input? passthrough without loading model (§1.2)
+    complex_in, complex_why = is_complex_input(cmd_line)
+    if complex_in:
+        return Verdict(Lane.PASSTHROUGH, f"complex input ({complex_why}) → passthrough")
     sev = classify(line)
     if sev is HIGH:
         return Verdict(Lane.DANGER_HIGH, "matches high-danger pattern", sev.detail)
