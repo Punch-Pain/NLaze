@@ -28,6 +28,7 @@ where the data comes from so the mix is reproducible and licensing is documented
 | nl2shell-training-v3 | HF `AryaYT/nl2shell-training-v3` | Apache-2.0 | `d6fc438` | NL → command (dedup-filtered) |
 | Command_Generation | HF `neerajnarwal/Command_Generation` | Apache-2.0 | `ee16ec8` | NL → command (Linux-filtered) |
 | common-misspellings | Wikimedia Commons / Wikipedia lists | CC BY-SA 4.0 | 2026-09-22 | typo |
+| cli-1m | HF `carosh/cli-1m` | Apache-2.0 (card; per-row `license_spdx`, GPL/LGPL excluded upstream; tldr slice CC BY 4.0) | tag `v1.0-rc1` (`99be857`) + sha256 in `data/external/MANIFEST.sha256` | NL → command intents with flag golds (en/bash/permissive slice only) |
 | tldr-pages | `tldr-pages/tldr` | CC BY 4.0 | `098d372` | path templates |
 | typosquatting | `ecosyste-ms/typosquatting` | CC0 | `fd0bde9` | semantic fixes |
 | thefuck rules | `nvbn/thefuck` | MIT | `c7e7e1d8` | flag/semantic fixes |
