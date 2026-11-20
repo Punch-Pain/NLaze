@@ -1,0 +1,97 @@
+name: harness-safety
+
+# Safety gate for the NLaze v6 harness (docs/spec-v6-2026-11-08.md).
+# Runs the pure-Python harness test suite, the danger-table coverage gate, the
+# Gate G1 option-format freeze check, and the isolated bubblewrap fish+daemon
+# end-to-end test. No model weights, training data, or GPU are required.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, beta, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  harness-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install system dependencies (fish + bubblewrap)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fish bubblewrap
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest numpy
+
+      - name: Preflight: bubblewrap can unshare namespaces
+        run: |
+          bwrap \
+            --unshare-all --die-with-parent \
+            --ro-bind /usr /usr \
+            --symlink usr/lib /lib \
+            --symlink usr/lib /lib64 \
+            --symlink usr/bin /bin \
+            --symlink usr/bin /sbin \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp \
+            -- true
+
+      - name: Run harness test suite
+        run: python -m pytest tests -q
+
+      - name: Danger-table coverage gate (Arm 4 must be 100%)
+        run: |
+          python - <<'PY'
+          import sys
+          from nlaze.danger import classify, HIGH
+          from tests.test_danger_v6 import ARM4_BASES, ARM4_VARIANTS
+
+          checked = ARM4_BASES + ARM4_VARIANTS
+          missed = [c for c in checked if classify(c) is not HIGH]
+          rate = (len(checked) - len(missed)) / len(checked)
+          print(f"Arm 4 danger coverage: {len(checked) - len(missed)}/{len(checked)} ({rate:.1%})")
+          if missed:
+              print("DANGER COVERAGE REGRESSION — unclassified destructive commands:")
+              for c in missed:
+                  print(f"  {c}")
+              sys.exit(1)
+          print("danger coverage gate: PASS")
+          PY
+
+      - name: Gate G1 option-format freeze check
+        run: |
+          python - <<'PY'
+          import sys
+          from nlaze.candidates import INSTRUCTIONS, QID, TRAIN_K, format_question
+
+          ordered = [f"cmd_{i}" for i in range(TRAIN_K)]
+          q = format_question(ordered)
+          assert list(q.keys()) == [QID], q.keys()
+          inner = q[QID]
+          assert inner["type"] == "choice"
+          assert inner["instructions"] == INSTRUCTIONS == "What did the user mean to type?"
+          assert list(inner["criteria"].keys()) == [f"option_{i}" for i in range(TRAIN_K)]
+          assert inner["criteria"][f"option_{TRAIN_K - 1}"] == ordered[-1]
+          print(f"Gate G1 format freeze: PASS (k={TRAIN_K}, qid={QID!r})")
+          PY
+
+      - name: Safety summary
+        if: always()
+        run: |
+          echo "harness-safety workflow finished: ${{ job.status }}"
