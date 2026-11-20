@@ -99,3 +99,38 @@ class Store:
         self.db.execute("DELETE FROM pairs WHERE input_hash=? AND correction=?",
                         (input_hash, correction))
         self.db.commit()
+
+    def top_corrections(self, inp: str, limit: int = 3) -> list[tuple[str, float]]:
+        """Spec §3: user-history frequencies for an exact input, decayed to current tick."""
+        ih = self.hash_input(inp)
+        t = self.tick_now()
+        rows = self.db.execute(
+            "SELECT correction, n_eff, last_tick, quarantined_until_tick FROM pairs WHERE input_hash=?",
+            (ih,),
+        ).fetchall()
+        scored: list[tuple[str, float]] = []
+        for corr, n_eff, last_tick, quar in rows:
+            if t < quar:
+                continue
+            decayed = _d(n_eff, last_tick, t)
+            if decayed > 0.0:
+                scored.append((corr, decayed))
+        scored.sort(key=lambda x: (-x[1], x[0]))
+        return scored[:limit]
+
+    def popular_corrections(self, limit: int = 7) -> list[tuple[str, float]]:
+        """Spec §3: user-history global frequency prior across inputs."""
+        t = self.tick_now()
+        rows = self.db.execute(
+            "SELECT correction, n_eff, last_tick, quarantined_until_tick FROM pairs"
+        ).fetchall()
+        totals: dict[str, float] = {}
+        for corr, n_eff, last_tick, quar in rows:
+            if t < quar:
+                continue
+            decayed = _d(n_eff, last_tick, t)
+            if decayed > 0.0:
+                totals[corr] = totals.get(corr, 0.0) + decayed
+        ranked = sorted(totals.items(), key=lambda x: (-x[1], x[0]))
+        return ranked[:limit]
+
