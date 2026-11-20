@@ -101,6 +101,7 @@ class HarnessEngine:
         offered = [c.cmd for c in cands]
         if corr not in offered:
             offered = [corr] + offered[:6]
+        self.store.record_auto_use(raw, corr)
         self.reconditioner.record_offer(raw, corr, offered)
         return {
             "action": "auto",
@@ -134,8 +135,8 @@ class HarnessEngine:
             override = best_cmd != prime.cmd
             return best_cmd, round(conf, 4), override
 
-        # Harness not confident (§3.1) -> 3-rotation cyclic probability average
-        rots = rotations_for_model(scored, n_rotations=3)
+        # Harness not confident (§3.1) -> full cyclic rotation probability average in 1 batched call
+        rots = rotations_for_model(scored, n_rotations=len(scored))
         questions = {}
         for r_idx, rot in enumerate(rots):
             questions[f"r{r_idx}"] = {

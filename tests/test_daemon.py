@@ -123,6 +123,19 @@ def test_direct_serve_under_5ms_without_calling_model(tmp_path):
     assert dt_ms <= 5.0, f"direct serve took {dt_ms:.2f} ms (> 5 ms)"
 
 
+def test_direct_serve_stays_alive_under_continued_use(tmp_path):
+    """Regression: repeated direct-serve auto-runs must refresh pair evidence so an actively
+    used shortcut does not decay below AUTO_NEFF while being used."""
+    eng = _make_engine(tmp_path)
+    for _ in range(18):
+        eng.store.record_accept("gti status", "git status")
+    for _ in range(105):
+        eng.store.tick()
+    for _ in range(250):
+        res = eng.handle_postexec("gti status", exit_status=127, cwd=tmp_path)
+        assert res["action"] == "auto" and res["source"] == "direct_serve"
+
+
 def test_strike_demotes_direct_serve_to_confirm(tmp_path):
     """Spec §5.2 & §6: running an alternative from a recent offer demotes AUTO/DIRECT to CONFIRM."""
     eng = _make_engine(tmp_path)

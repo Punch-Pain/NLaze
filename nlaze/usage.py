@@ -64,6 +64,23 @@ class Store:
                             (ih, correction, 1.0, 1, t, t))
         self.db.commit()
 
+    def record_auto_use(self, inp: str, correction: str) -> None:
+        """Refresh pair evidence when served via Auto / Direct Serve (tick already bumped by postexec)."""
+        t = self.tick_now()
+        ih = self.hash_input(inp)
+        row = self.db.execute(
+            "SELECT id, n_eff, last_tick FROM pairs WHERE input_hash=? AND correction=?",
+            (ih, correction),
+        ).fetchone()
+        if row:
+            pid, n_eff, last_tick = row
+            new_neff = _d(n_eff, last_tick, t) + 1.0
+            self.db.execute(
+                "UPDATE pairs SET n_eff=?, accepted=accepted+1, last_tick=? WHERE id=?",
+                (new_neff, t, pid),
+            )
+            self.db.commit()
+
     def record_reject(self, inp: str, correction: str) -> None:
         t = self.tick()
         ih = self.hash_input(inp)

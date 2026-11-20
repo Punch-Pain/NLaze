@@ -276,48 +276,45 @@ def retrieve_candidates(
             score = min(0.995, 0.95 + min(0.045, n_eff / 400.0))
             _add(ScoredCandidate(corr, score, "history"))
 
-    # Parse tokens (fallback to whitespace split if quotes are unbalanced)
-    try:
-        parts = shlex.split(raw, posix=True) if raw else []
-    except ValueError:
-        parts = raw.split()
-
-    if parts:
-        # Unwrap optional sudo prefix while remembering it
+    # Parse tokens while preserving exact raw argument substrings (including quotes)
+    raw_tokens = raw.split()
+    if raw_tokens:
         prefix = ""
-        body = parts
-        if body[0] == "sudo" and len(body) > 1:
+        body_str = raw
+        if raw_tokens[0] == "sudo" and len(raw_tokens) > 1:
             prefix = "sudo "
-            body = body[1:]
+            body_str = raw.split(None, 1)[1]
 
-        head = body[0]
-        rest = body[1:]
-        rest_str = (" " + " ".join(rest)) if rest else ""
+        body_parts = body_str.split(None, 2)
+        head = body_parts[0]
+        rest_after_head = (" " + body_str.split(None, 1)[1]) if len(body_parts) > 1 else ""
+        first_arg = body_parts[1] if len(body_parts) > 1 else None
+        rest_after_sub = (" " + body_parts[2]) if len(body_parts) > 2 else ""
 
         # 2. Path adapter / zoxide resolver (`cd <arg>`, `z <arg>`, or `dc <arg>`)
-        if head in {"cd", "z", "dc", "cdd"} and rest:
-            for cand in _path_candidates(" ".join(rest), cwd_path, use_zoxide=use_zoxide):
+        if head in {"cd", "z", "dc", "cdd"} and first_arg is not None:
+            arg_raw = body_str.split(None, 1)[1]
+            for cand in _path_candidates(arg_raw, cwd_path, use_zoxide=use_zoxide):
                 _add(cand)
 
         # 3a. Git family (`git <sub>` or typo'd `gti <sub>`, `igt <sub>`)
         git_dist = damerau_levenshtein(head.lower(), "git")
         if (head == "git" or (git_dist <= 1 and len(head) in {2, 3, 4})) and head_resolves("git"):
-            if rest and not rest[0].startswith("-"):
-                sub_q = rest[0]
-                tail_str = (" " + " ".join(rest[1:])) if len(rest) > 1 else ""
+            if first_arg is not None and not first_arg.startswith("-"):
+                sub_q = first_arg
                 head_penalty = 0.0 if head == "git" else 0.03
                 for sub in GIT_SUBCOMMANDS:
                     if damerau_levenshtein(sub_q.lower(), sub) <= max(3, len(sub_q)):
                         sc = token_similarity(sub_q, sub, prior=_GIT_SUB_PRIOR.get(sub, 0.02))
                         _add(
                             ScoredCandidate(
-                                f"{prefix}git {sub}{tail_str}",
+                                f"{prefix}git {sub}{rest_after_sub}",
                                 max(0.10, sc - head_penalty),
                                 "family",
                             )
                         )
             else:
-                _add(ScoredCandidate(f"{prefix}git{rest_str}", 0.90, "family"))
+                _add(ScoredCandidate(f"{prefix}git{rest_after_head}", 0.90, "family"))
 
         # 3b. Docker / Podman family (`docker <sub>`, `podman <sub>`, or typo'd head)
         for fam in ("docker", "podman"):
@@ -325,9 +322,8 @@ def retrieve_candidates(
                 continue
             fdist = damerau_levenshtein(head.lower(), fam)
             if head == fam or fdist <= 2:
-                if rest and not rest[0].startswith("-"):
-                    sub_q = rest[0]
-                    tail_str = (" " + " ".join(rest[1:])) if len(rest) > 1 else ""
+                if first_arg is not None and not first_arg.startswith("-"):
+                    sub_q = first_arg
                     head_penalty = 0.0 if head == fam else 0.04 * fdist
                     for sub in CONTAINER_SUBCOMMANDS:
                         if damerau_levenshtein(sub_q.lower(), sub) <= max(3, len(sub_q)):
@@ -336,7 +332,7 @@ def retrieve_candidates(
                             )
                             _add(
                                 ScoredCandidate(
-                                    f"{prefix}{fam} {sub}{tail_str}",
+                                    f"{prefix}{fam} {sub}{rest_after_sub}",
                                     max(0.10, sc - head_penalty),
                                     "family",
                                 )
@@ -355,7 +351,7 @@ def retrieve_candidates(
                 if dist > 3:
                     continue
             sc = token_similarity(head, cand_head, prior=prior)
-            _add(ScoredCandidate(f"{prefix}{cand_head}{rest_str}", sc, "exec"))
+            _add(ScoredCandidate(f"{prefix}{cand_head}{rest_after_head}", sc, "exec"))
 
     # 3d. Global user-history popular corrections as secondary prior
     if store is not None:

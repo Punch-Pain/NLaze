@@ -36,6 +36,13 @@ def test_retrieve_git_head_and_subcommand_typo_preserves_flags():
     assert cmds[0] == "git status -s"
 
 
+def test_retrieve_preserves_quoted_arguments():
+    """Phase 4 fix: replacing head/subcommand must preserve user quoting verbatim."""
+    cands = retrieve_candidates("gti commit -m 'fix bug'")
+    cmds = [c.cmd for c in cands]
+    assert cmds[0] == "git commit -m 'fix bug'"
+
+
 def test_retrieve_cd_directory_typo(tmp_path):
     (tmp_path / "documents").mkdir()
     (tmp_path / "downloads").mkdir()
