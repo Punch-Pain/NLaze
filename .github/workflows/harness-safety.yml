@@ -42,14 +42,11 @@ jobs:
         run: |
           bwrap \
             --unshare-all --die-with-parent \
-            --ro-bind /usr /usr \
-            --symlink usr/lib /lib \
-            --symlink usr/lib /lib64 \
-            --symlink usr/bin /bin \
-            --symlink usr/bin /sbin \
-            --proc /proc --dev /dev \
-            --tmpfs /tmp \
-            -- true
+            --ro-bind / / \
+            --tmpfs /tmp --tmpfs /home --tmpfs /run \
+            --dev /dev --proc /proc \
+            --chdir /tmp \
+            -- /usr/bin/fish -c 'exit 0'
 
       - name: Run harness test suite
         run: python -m pytest tests -q

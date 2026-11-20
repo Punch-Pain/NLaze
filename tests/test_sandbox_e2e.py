@@ -1,6 +1,6 @@
 """End-to-end fish -> daemon -> correction -> execution test inside an isolated
-bubblewrap (bwrap) container sandbox with tmpfs root and no host /home or USB mounts
-(spec §10, plan Phase 0.4 & Phase 3.2)."""
+bubblewrap (bwrap) container sandbox with a read-only host root, tmpfs /tmp /home /run,
+and no host /home or USB mounts (spec §10, plan Phase 0.4 & Phase 3.2)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,13 +18,13 @@ HAS_FISH = shutil.which("fish") is not None
 @pytest.mark.skipif(not (HAS_BWRAP and HAS_FISH), reason="bwrap and fish required for sandbox e2e")
 def test_fish_daemon_e2e_in_isolated_sandbox():
     fish_script = r"""
-# 0. Verify sandbox isolation: no host /home/abdo or /run/media mounted, /app/nlaze is read-only
+# 0. Verify sandbox isolation: no host /home/abdo or /run/media mounted, /tmp/nlaze is read-only
 if test -e /home/abdo -o -e /run/media
     echo "FAIL: host paths visible inside sandbox"
     exit 1
 end
-if touch /app/nlaze/evil 2>/dev/null
-    echo "FAIL: /app/nlaze is writable"
+if touch /tmp/nlaze/evil 2>/dev/null
+    echo "FAIL: /tmp/nlaze is writable"
     exit 1
 end
 
@@ -38,13 +38,15 @@ set -gx NLAZE_SOCKET_PATH /tmp/nlaze-run/daemon.sock
 set -gx NLAZE_USAGE_PATH /home/sandbox/usage.sqlite
 set -gx NLAZE_POLICY_PATH /home/sandbox/policy.sqlite
 
-# Initialize a scratch git repo in /work (tmpfs)
-git init -q /work
-git -C /work config user.email "sandbox@local"
-git -C /work config user.name "Sandbox"
-echo "hello" > /work/README.md
-git -C /work add README.md
-git -C /work commit -q -m "init"
+# Initialize a scratch git repo in /tmp/work (tmpfs)
+mkdir -p /tmp/work
+cd /tmp/work
+git init -q /tmp/work
+git -C /tmp/work config user.email "sandbox@local"
+git -C /tmp/work config user.name "Sandbox"
+echo "hello" > /tmp/work/README.md
+git -C /tmp/work add README.md
+git -C /tmp/work commit -q -m "init"
 
 # 1. Start the nlaze daemon in background inside the sandbox
 nlaze daemon --socket $NLAZE_SOCKET_PATH &
@@ -61,7 +63,7 @@ if not test -S $NLAZE_SOCKET_PATH
 end
 
 # Load the fish hook
-source /app/nlaze/fish/nlaze.fish
+source /tmp/nlaze/fish/nlaze.fish
 
 # 2. Valid command with nonzero exit (grep no match) -> passthrough (no output)
 false
@@ -146,20 +148,16 @@ echo "SANDBOX_E2E_OK"
         "bwrap",
         "--unshare-all",
         "--die-with-parent",
-        "--ro-bind", "/usr", "/usr",
-        "--symlink", "usr/lib", "/lib",
-        "--symlink", "usr/lib", "/lib64",
-        "--symlink", "usr/bin", "/bin",
-        "--symlink", "usr/bin", "/sbin",
-        "--proc", "/proc",
-        "--dev", "/dev",
+        "--ro-bind", "/", "/",
         "--tmpfs", "/tmp",
-        "--tmpfs", "/home/sandbox",
-        "--tmpfs", "/work",
-        "--ro-bind", str(NLAZE_PKG), "/app/nlaze",
+        "--tmpfs", "/home",
+        "--tmpfs", "/run",
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--ro-bind", str(NLAZE_PKG), "/tmp/nlaze",
         "--setenv", "HOME", "/home/sandbox",
-        "--setenv", "PYTHONPATH", "/app",
-        "--chdir", "/work",
+        "--setenv", "PYTHONPATH", "/tmp",
+        "--chdir", "/tmp",
         "/usr/bin/fish", "-c", fish_script,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
