@@ -31,17 +31,17 @@ function __nlaze_postexec --on-event fish_postexec
     switch "$action"
         case auto
             echo "[nlaze auto] $corr"
-            eval -- "$corr"
+            eval "$corr"
 
         case certify_head
             echo "NLaze wants to auto-correct to: $corr"
             echo "Model confidence: $conf%. This is a one-time request."
             read -l -P "Allow auto-correcting to '$head'? [yes/no] " ans
             if test "$ans" = "yes" -o "$ans" = "y"
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --accept --certify head --head "$head" >/dev/null 2>&1
-                eval -- "$corr"
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --accept --certify=head --head="$head" >/dev/null 2>&1
+                eval "$corr"
             else
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --reject --certify head --head "$head" >/dev/null 2>&1
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --reject --certify=head --head="$head" >/dev/null 2>&1
             end
 
         case certify_flag
@@ -49,19 +49,19 @@ function __nlaze_postexec --on-event fish_postexec
             echo "The command '$head' is allowed, but flag '$flag' may be dangerous."
             read -l -P "Allow this flag? [yes/no] " ans
             if test "$ans" = "yes" -o "$ans" = "y"
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --accept --certify flag --head "$head" --flag "$flag" >/dev/null 2>&1
-                eval -- "$corr"
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --accept --certify=flag --head="$head" --flag="$flag" >/dev/null 2>&1
+                eval "$corr"
             else
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --reject --certify flag --head "$head" --flag "$flag" >/dev/null 2>&1
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --reject --certify=flag --head="$head" --flag="$flag" >/dev/null 2>&1
             end
 
         case confirm confirm_mild
             read -l -P "[nlaze] Did you mean: $corr ? [y/N] " ans
             if test "$ans" = "y" -o "$ans" = "Y" -o "$ans" = "yes"
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --accept >/dev/null 2>&1
-                eval -- "$corr"
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --accept >/dev/null 2>&1
+                eval "$corr"
             else
-                $nlaze_bin feedback --input "$cmd_line" --correction "$corr" --reject >/dev/null 2>&1
+                $nlaze_bin feedback --input="$cmd_line" --correction="$corr" --reject >/dev/null 2>&1
             end
 
         case confirm_high
@@ -69,7 +69,7 @@ function __nlaze_postexec --on-event fish_postexec
             echo "  $corr"
             read -l -P "Type 'yes' to execute (any other input cancels): " ans
             if test "$ans" = "yes"
-                eval -- "$corr"
+                eval "$corr"
             end
     end
 end
