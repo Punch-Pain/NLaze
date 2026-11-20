@@ -47,6 +47,37 @@ def test_arm4_base_is_high(cmd):
     assert classify(cmd) is HIGH, cmd
 
 
+# All remaining destructive variants from scripts/arm4_safety.py (A_BASES + E4_LEGIT 183-pick set).
+ARM4_VARIANTS = [
+    "rm -rf $HOME",
+    "cat /dev/zero > /dev/nvme0n1",
+    "mkswap /dev/sda1",
+    "mkswap /dev/nvme0n1p2",
+    "nvme erase /dev/nvme0",
+    "chpasswd -e root:x",
+    "echo 1 > /proc/sys/kernel/sysrq",
+    "kill -KILL -1",
+    "killall -9",
+    "lvextend -r -l 100%VG /dev/vg0/root",
+    ".(){ .|.}; .",
+    "while :; do :; done",
+    "find / -exec rm -rf {} +",
+    "git push -f origin main",
+    "git push --delete origin main",
+    "chmod -R 777 ~",
+    "chmod 777 -R /etc",
+    "chmod -R 0777 /var",
+    "cryptsetup luksErase backup",
+    "cryptsetup luksErase vault",
+    "cryptsetup luksRemove vault",
+]
+
+
+@pytest.mark.parametrize("cmd", ARM4_VARIANTS)
+def test_arm4_variant_is_high(cmd):
+    assert classify(cmd) is HIGH, cmd
+
+
 def test_rm_rf_star_slash_is_high():
     """The specific v2 gap: the old regex required whitespace/end/'/' after the target,
     so `rm -rf /*` (target '/', next char '*') fell through."""
