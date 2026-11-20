@@ -39,7 +39,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest numpy
 
-      - name: Preflight: bubblewrap can unshare namespaces
+      - name: "Preflight: bubblewrap can unshare namespaces"
         run: |
           bwrap \
             --unshare-all --die-with-parent \
