@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Phase 5.2 — generate teacher soft targets over the training corpus (frozen G1 format).
+"""Phase 5.2 — generate teacher soft targets over the training corpus (Method D).
 
 RESUMABLE BY DESIGN: the corpus is processed in fixed-order shards, each written to a
 `.tmp` file and atomically renamed on completion. A completed shard is never recomputed;
 a crash loses at most one shard. Restart the same command and it continues.
 
-For each training item:
-  - chat prefix + numbered 7-option list (stored order),
-  - one batched forward over the stored order + `--stability-rotations` extra rotations,
-  - PMI_DC = score - null("Answer:", option),
-  - probs = softmax(PMI_DC / T); also stores raw and length-normalised variants,
-  - stable = all rotations agree on the argmax.
+Teacher scoring (Method D, chosen by the bake-off on 2026-11-20):
+  - options are presented as a numbered list in the USER turn,
+  - the model is asked to "Answer with the number of the best option",
+  - one forward per rotation; the n single-token answer numbers are read at the answer
+    position, so `teacher_probs = softmax(number_logprobs / T)`.
+  This scored 0.820 overall (typo 0.923, intent 0.852, path 1.0, flag 1.0) vs 0.458 raw
+  list-scoring and 0.579 PMI_DC. Danger stays 0.0 because a general model cannot prefer
+  NLaze's made-up `confirm_with_user()` sentinel; the deterministic danger table owns
+  that slice.
 
 Output rows (one shard file per `--shard-size` corpus rows):
-  {"input", "options", "gold", "slice", "teacher_probs", "teacher_argmax",
-   "raw_probs", "pmi_len_probs", "stable"}
+  {"input", "options", "gold", "slice", "teacher_probs", "teacher_argmax", "stable"}
 
 No command string is ever executed.
 """
@@ -28,12 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts.bakeoff import (
-    chat_prefix,
-    encode_prompt,
-    score_null_batch,
-    score_rotations_batch,
-)
+from scripts.bakeoff import number_user_prompt, score_numbers
 
 
 def contiguous_completed(rows_n: int, shard_size: int, out_dir: Path) -> int:
@@ -60,8 +57,8 @@ def main() -> int:
     ap.add_argument("--model", default="models/teacher/granite-4.2-8b-bf16")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--shard-size", type=int, default=250)
-    ap.add_argument("--stability-rotations", type=int, default=5,
-                    help="extra rotations beyond the stored order (5 => 6 total, matching §3.5)")
+    ap.add_argument("--stability-rotations", type=int, default=2,
+                    help="extra rotations beyond the stored order (2 => 3 total)")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--device", default="cuda")
     ns = ap.parse_args()
@@ -83,7 +80,6 @@ def main() -> int:
         print("[gen] all shards complete", flush=True)
         return 0
 
-    remaining = rows[start_shard * ns.shard_size:]
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -96,17 +92,10 @@ def main() -> int:
         torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
     )
     model.eval()
-    pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
     print(f"[gen] loaded {ns.model}", flush=True)
 
     def row_options(r: dict) -> list[str]:
         return list(r["questions"]["correction"]["criteria"].values())
-
-    distinct = sorted({o for r in remaining for o in row_options(r)})
-    tn = time.perf_counter()
-    null_scores = score_null_batch(tok, model, distinct, ns.device)
-    torch.cuda.empty_cache()
-    print(f"[gen] null term: {len(distinct)} options in {time.perf_counter() - tn:.1f}s", flush=True)
 
     max_rot = 1 + max(0, ns.stability_rotations)
     t0 = time.perf_counter()
@@ -122,50 +111,24 @@ def main() -> int:
                 opts = row_options(r)
                 n = len(opts)
                 gold = r["meta"]["correct"]
-                prefix = chat_prefix(tok, text)
 
-                orders: list[list[str]] = []
-                seqs: list[list[int]] = []
-                spans_list: list[list[tuple[int, int]]] = []
+                rot_winners: list[int] = []
+                base_scores: list[float] | None = None
                 for j in range(min(max_rot, n)):
                     order = opts[j:] + opts[:j]
-                    ids, spans = encode_prompt(tok, prefix, order)
-                    orders.append(order)
-                    seqs.append(ids)
-                    spans_list.append(spans)
-                rot_scores = score_rotations_batch(model, seqs, spans_list, ns.device, pad_id=pad_id)
+                    prefix = tok.encode(number_user_prompt(tok, text, order),
+                                        add_special_tokens=False)
+                    scores = score_numbers(model, tok, prefix, n, "cuda")
+                    if j == 0:
+                        base_scores = scores
+                    # map the rotated winner back to the canonical option index
+                    rot_winners.append((j + int(np.argmax(scores))) % n)
+                assert base_scores is not None
 
-                def dist(row_scores: list[float], order: list[str]) -> np.ndarray:
-                    z = np.array(
-                        [row_scores[i] - null_scores[order[i]] for i in range(n)],
-                        dtype=np.float64,
-                    ) / ns.temperature
-                    z -= z.max()
-                    return np.exp(z) / np.exp(z).sum()
-
-                probs = dist(rot_scores[0], orders[0])
-                raw = np.array(rot_scores[0], dtype=np.float64)
-                raw -= raw.max()
-                raw_probs = np.exp(raw) / np.exp(raw).sum()
-                lens = np.array(
-                    [max(1, len(tok.encode(orders[0][i], add_special_tokens=False))) for i in range(n)],
-                    dtype=np.float64,
-                )
-                zl = np.array(
-                    [rot_scores[0][i] - null_scores[orders[0][i]] for i in range(n)],
-                    dtype=np.float64,
-                ) / (lens * ns.temperature)
-                zl -= zl.max()
-                pmi_len_probs = np.exp(zl) / np.exp(zl).sum()
-
-                winners = []
-                for j, order in enumerate(orders):
-                    sj = np.array(
-                        [rot_scores[j][i] - null_scores[order[i]] for i in range(n)],
-                        dtype=np.float64,
-                    )
-                    winners.append(int(np.argmax(sj)))
-                stable = len(set(winners)) == 1
+                z = np.array(base_scores, dtype=np.float64) / ns.temperature
+                z -= z.max()
+                probs = np.exp(z) / np.exp(z).sum()
+                stable = len(set(rot_winners)) == 1
 
                 f.write(json.dumps({
                     "input": text,
@@ -174,8 +137,6 @@ def main() -> int:
                     "slice": r["meta"].get("type", "unknown"),
                     "teacher_probs": [round(float(p), 6) for p in probs],
                     "teacher_argmax": int(np.argmax(probs)),
-                    "raw_probs": [round(float(p), 6) for p in raw_probs],
-                    "pmi_len_probs": [round(float(p), 6) for p in pmi_len_probs],
                     "stable": stable,
                 }) + "\n")
                 done += 1

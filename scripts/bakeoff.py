@@ -390,6 +390,19 @@ def encode_prompt(tok, prefix: str, order: list[str]) -> tuple[list[int], list[t
     return out_ids, spans
 
 
+def _logsumexp_rows(x, chunk: int = 16384):
+    """Row-wise logsumexp without a full fp32 copy of `x` (chunked over the vocab)."""
+    import torch
+
+    parts = [
+        torch.logsumexp(x[:, i:i + chunk].float(), dim=-1)
+        for i in range(0, x.size(1), chunk)
+    ]
+    if len(parts) == 1:
+        return parts[0]
+    return torch.logsumexp(torch.stack(parts, dim=-1), dim=-1)
+
+
 def score_spans(model, input_ids: list[int], spans: list[tuple[int, int]], device: str) -> list[float]:
     """Sum logP(option tokens | prefix) for each span, slicing hidden states before lm_head.
 
@@ -399,8 +412,8 @@ def score_spans(model, input_ids: list[int], spans: list[tuple[int, int]], devic
 
     ids = torch.tensor([input_ids], dtype=torch.long, device=device)
     with torch.no_grad():
-        out = model(input_ids=ids, output_hidden_states=True, use_cache=False)
-    h = out.hidden_states[-1][0]  # [seq, d]
+        out = model.model(input_ids=ids, use_cache=False)
+    h = out.last_hidden_state[0]  # [seq, d]
 
     pred_pos: list[int] = []
     opt_slice: list[tuple[int, int]] = []
@@ -411,7 +424,7 @@ def score_spans(model, input_ids: list[int], spans: list[tuple[int, int]], devic
     logits = model.lm_head(h[pos_t])  # [total, vocab]
     tok_ids = torch.cat([ids[0, t:t + n] for (t, n) in spans])
     target = logits.gather(1, tok_ids.unsqueeze(1)).squeeze(1).float()
-    logZ = torch.logsumexp(logits.float(), dim=-1)
+    logZ = _logsumexp_rows(logits)
     lp = target - logZ
     del logits
 
@@ -453,9 +466,8 @@ def score_rotations_batch(
     ids_t = torch.tensor(ids, dtype=torch.long, device=device)
     attn_t = torch.tensor(attn, dtype=torch.long, device=device)
     with torch.no_grad():
-        out = model(input_ids=ids_t, attention_mask=attn_t,
-                    output_hidden_states=True, use_cache=False)
-    h = out.hidden_states[-1]  # [B, maxlen, d]
+        out = model.model(input_ids=ids_t, attention_mask=attn_t, use_cache=False)
+    h = out.last_hidden_state  # [B, maxlen, d]
 
     b_idx: list[int] = []
     pos_list: list[int] = []
@@ -477,7 +489,7 @@ def score_rotations_batch(
     logits = model.lm_head(h_slice)
     t_t = torch.tensor(tok_list, dtype=torch.long, device=device)
     target = logits.gather(1, t_t.unsqueeze(1)).squeeze(1).float()
-    logZ = torch.logsumexp(logits.float(), dim=-1)
+    logZ = _logsumexp_rows(logits)
     lp = target - logZ
     del logits
     return [[float(lp[s:e].sum().item()) for (s, e) in sb] for sb in slices]
@@ -505,9 +517,8 @@ def score_null_batch(
         ids_t = torch.tensor(ids, dtype=torch.long, device=device)
         attn_t = torch.tensor(attn, dtype=torch.long, device=device)
         with torch.no_grad():
-            out = model(input_ids=ids_t, attention_mask=attn_t,
-                        output_hidden_states=True, use_cache=False)
-        h = out.hidden_states[-1]  # [B, seq, d]
+            out = model.model(input_ids=ids_t, attention_mask=attn_t, use_cache=False)
+        h = out.last_hidden_state  # [B, seq, d]
 
         b_idx: list[int] = []
         pos_list: list[int] = []
@@ -529,13 +540,100 @@ def score_null_batch(
         logits = model.lm_head(h_slice)
         t_t = torch.tensor(tok_list, dtype=torch.long, device=device)
         target = logits.gather(1, t_t.unsqueeze(1)).squeeze(1).float()
-        logZ = torch.logsumexp(logits.float(), dim=-1)
+        logZ = _logsumexp_rows(logits)
         all_lp = target - logZ
         del logits
         for j, (s0, s1) in enumerate(slices):
             scores[batch[j]] = float(all_lp[s0:s1].sum().item())
         print(f"[causal] null batch {i + len(batch)}/{len(options)}", flush=True)
     return scores
+
+
+SYSTEM_NUMBER = "You are a shell command corrector. Answer with the number of the best option."
+
+
+def number_user_prompt(tok, text: str, opts: list[str]) -> str:
+    user = text + "\n\nOptions:\n" + "\n".join(f"{i + 1}. {o}" for i, o in enumerate(opts))
+    msgs = [{"role": "system", "content": SYSTEM_NUMBER},
+            {"role": "user", "content": user}]
+    return tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
+                                   enable_thinking=False)
+
+
+def score_numbers(model, tok, prompt_ids: list[int], n: int, device: str) -> list[float]:
+    """One forward; read logprobs of the n single-token answer numbers at the answer position."""
+    import torch
+
+    sp = tok.encode(" ", add_special_tokens=False)
+    ids = torch.tensor([prompt_ids + sp], dtype=torch.long, device=device)
+    with torch.no_grad():
+        out = model.model(input_ids=ids, use_cache=False)
+        h = out.last_hidden_state[0, -1]
+        logits = model.lm_head(h)
+        logZ = _logsumexp_rows(logits.unsqueeze(0))[0]
+    scores: list[float] = []
+    for i in range(1, n + 1):
+        nid = tok.encode(str(i), add_special_tokens=False)
+        if len(nid) != 1:
+            raise ValueError(f"answer number {i} is not a single token: {nid}")
+        scores.append(float(logits[nid[0]].float() - logZ))
+    return scores
+
+
+def score_causal_number(
+    model_dir: str,
+    items: list[dict],
+    temperature: float = 1.0,
+    device: str = "cuda",
+    max_memory: dict | None = None,
+) -> tuple[dict, float]:
+    """Method D: numbered options in the user turn, score the answer-number token."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    t0 = time.perf_counter()
+    bnb = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        llm_int8_skip_modules=["lm_head"],
+    )
+    tok = AutoTokenizer.from_pretrained(model_dir)
+    kwargs: dict = dict(quantization_config=bnb, torch_dtype=torch.bfloat16,
+                        low_cpu_mem_usage=True)
+    if max_memory is not None:
+        kwargs["device_map"] = "auto"
+        kwargs["max_memory"] = max_memory
+    else:
+        kwargs["device_map"] = device
+    model = AutoModelForCausalLM.from_pretrained(model_dir, **kwargs)
+    model.eval()
+    print(f"[causal-number] loaded {model_dir} in {time.perf_counter() - t0:.1f}s", flush=True)
+
+    per_item_mats: list[np.ndarray] = []
+    ts = time.perf_counter()
+    for k, it in enumerate(items):
+        opts = it["options"]
+        n = len(opts)
+        mat = np.zeros((n, n), dtype=np.float64)
+        for r in range(n):
+            order = opts[r:] + opts[:r]
+            prefix = tok.encode(number_user_prompt(tok, it["text"], order),
+                                add_special_tokens=False)
+            scores = score_numbers(model, tok, prefix, n, device)
+            for i in range(n):
+                mat[r, (r + i) % n] = scores[i] / temperature
+        per_item_mats.append(mat)
+        if (k + 1) % 100 == 0:
+            el = time.perf_counter() - ts
+            print(f"[causal-number] {k + 1}/{len(items)} items, {el:.1f}s", flush=True)
+
+    wall_s = time.perf_counter() - t0
+    metrics = compute_metrics(items, per_item_mats)
+    metrics["wall_s"] = round(wall_s, 2)
+    metrics["ms_per_item"] = round(wall_s * 1000.0 / max(1, len(items)), 2)
+    metrics["method"] = "number"
+    return metrics, wall_s
 
 
 def score_causal(
@@ -642,6 +740,7 @@ def main() -> int:
     s = sub.add_parser("score", help="score a candidate model on the frozen bake-off draw")
     s.add_argument("--model", required=True)
     s.add_argument("--kind", choices=["laya", "causal"], default="laya")
+    s.add_argument("--method", choices=["list", "number"], default="number")
     s.add_argument("--limit", type=int, default=0)
     s.add_argument("--out", default=None)
     s.add_argument("--temperature", type=float, default=1.0)
@@ -673,7 +772,8 @@ def main() -> int:
                 max_memory[int(key) if key.isdigit() else key] = val
 
         if ns.kind == "causal":
-            metrics, _ = score_causal(
+            fn = score_causal_number if ns.method == "number" else score_causal
+            metrics, _ = fn(
                 ns.model, items, temperature=ns.temperature,
                 device=ns.device, max_memory=max_memory,
             )

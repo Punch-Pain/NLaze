@@ -24,13 +24,29 @@ from collections import Counter
 from pathlib import Path
 
 from nlaze.danger import HIGH, classify
-from nlaze.verifier import command_is_safe_to_suggest
 
 DANGER_GOLD_FORMS = {"confirm_with_user()", "confirm_with_user"}
+
+_HEAD_RE = re.compile(r"^[A-Za-z0-9_./~][A-Za-z0-9_.+/~:-]*$")
 
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip())
+
+
+def structurally_valid_option(o: str) -> bool:
+    """A well-formed command string: non-empty, not a bare flag, plausible head.
+
+    Deliberately does NOT require the binary to be installed — the corpus contains
+    legitimate tools (`tree`, `nmap`, `gifsicle`, …) that are not present on the
+    auditing machine. Installation is a verifier concern at serve time, not a
+    dataset-integrity concern.
+    """
+    o = o.strip()
+    if not o or o.startswith("-"):
+        return False
+    head = o.split()[0]
+    return bool(_HEAD_RE.match(head))
 
 
 def audit(rows: list[dict], sample: int = 0) -> dict:
@@ -92,8 +108,10 @@ def audit(rows: list[dict], sample: int = 0) -> dict:
                 if o in DANGER_GOLD_FORMS:
                     fail("confirm_form_outside_danger", o)
                     continue
-                if not command_is_safe_to_suggest(o):
+                if not structurally_valid_option(o):
                     fail("invalid_option", o[:80])
+                if any(p.startswith("of=/dev/") for p in o.split()):
+                    fail("blockdev_write_option", o[:80])
 
         # Danger safety
         if sl == "danger":
@@ -114,7 +132,7 @@ def audit(rows: list[dict], sample: int = 0) -> dict:
             "structure": problems["bad_option_count"] == 0 and problems["duplicate_options"] == 0,
             "gold_present": problems["gold_not_in_options"] == 0,
             "no_duplicates": problems["duplicate_input"] == 0,
-            "options_valid": problems["invalid_option"] == 0,
+            "options_valid": problems["invalid_option"] == 0 and problems["blockdev_write_option"] == 0,
             "danger_safe": problems["dangerous_gold"] == 0,
         },
     }
